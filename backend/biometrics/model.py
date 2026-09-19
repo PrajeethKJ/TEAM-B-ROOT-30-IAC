@@ -11,9 +11,14 @@ from sklearn.ensemble import IsolationForest
 
 class BiometricModel:
     def __init__(self):
-        pass
+        self.iso_models: Dict[str, IsolationForest] = {}
 
-    def fit_profile(self, feature_vectors: List[np.ndarray], digraph_samples: List[Dict[str, float]]) -> Dict[str, Any]:
+    def fit_profile(
+        self,
+        username: str,
+        feature_vectors: List[np.ndarray],
+        digraph_samples: List[Dict[str, float]]
+    ) -> Dict[str, Any]:
         """
         Fits a user biometric baseline profile from K enrollment samples.
         """
@@ -46,6 +51,7 @@ class BiometricModel:
             random_state=42
         )
         iso_forest.fit(X_train)
+        self.iso_models[username] = iso_forest
 
         # Baseline digraphs average
         all_digraph_keys = set()
@@ -57,17 +63,18 @@ class BiometricModel:
             vals = [s[dk] for s in digraph_samples if dk in s]
             avg_digraphs[dk] = float(np.mean(vals))
 
+        # Return strictly JSON-serializable primitives
         return {
-            "mean": mean_vec.tolist(),
-            "std": std_vec.tolist(),
-            "inv_cov": inv_cov.tolist(),
+            "mean": [round(float(v), 3) for v in mean_vec],
+            "std": [round(float(v), 3) for v in std_vec],
+            "inv_cov": [[round(float(c), 6) for c in row] for row in inv_cov],
             "avg_digraphs": avg_digraphs,
-            "sample_count": k,
-            "_iso_model": iso_forest
+            "sample_count": k
         }
 
     def evaluate_attempt(
         self,
+        username: str,
         attempt_vector: np.ndarray,
         attempt_digraphs: Dict[str, float],
         profile_data: Dict[str, Any]
@@ -109,11 +116,11 @@ class BiometricModel:
                 errs.append(abs(att_lat - base_lat) / max(30.0, base_lat))
             digraph_divergence = float(np.mean(errs))
 
-        # 4. Isolation Forest Score
-        iso_model = profile_data.get("_iso_model")
+        # 4. Isolation Forest Score — look up from in-memory cache (not stored in JSON)
+        iso_model = self.iso_models.get(username)
         iso_anomaly_score = 0.5
         if iso_model is not None:
-            # decision_function yields higher values for inliers (around 0.0 to 0.2), negative for outliers
+            # decision_function yields higher values for inliers (~0.0 to 0.2), negative for outliers
             raw_iso = float(iso_model.decision_function(x.reshape(1, -1))[0])
             # normalize to [0, 1] where 0 is perfect inlier, 1 is total anomaly
             iso_anomaly_score = max(0.0, min(1.0, 0.5 - (raw_iso * 2.0)))

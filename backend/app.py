@@ -130,7 +130,7 @@ async def enroll_user(req: EnrollmentRequest):
         digraph_samples.append(k_feat.get("digraph_latencies", {}))
 
     # Fit baseline model
-    profile_model = biometric_model.fit_profile(feature_vectors, digraph_samples)
+    profile_model = biometric_model.fit_profile(req.username, feature_vectors, digraph_samples)
     pw_hash = hashlib.sha256(req.password.encode("utf-8")).hexdigest()
 
     profile_store.save_profile(req.username, pw_hash, profile_model)
@@ -193,6 +193,7 @@ async def authenticate(req: AuthRequest):
     else:
         # 4. Behavioral Biometric Match
         is_genuine, confidence_score, metrics = biometric_model.evaluate_attempt(
+            username=req.username,
             attempt_vector=attempt_vec,
             attempt_digraphs=attempt_digraphs,
             profile_data=bio_profile
