@@ -190,3 +190,4 @@ class TelemetryHUD {
 }
 
 window.telemetryHUD = new TelemetryHUD();
+

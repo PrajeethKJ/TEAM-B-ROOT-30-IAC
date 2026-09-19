@@ -108,3 +108,4 @@ class BiometricExplainer:
                 "human_authenticity": 0.0 if decision == "BLOCKED_BOT" else 98.5
             }
         }
+

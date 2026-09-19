@@ -239,3 +239,4 @@ class FeatureExtractor:
             mouse_features.get("click_duration", 80.0)
         ]
         return np.array(vec, dtype=np.float64)
+

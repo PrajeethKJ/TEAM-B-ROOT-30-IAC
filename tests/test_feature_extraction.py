@@ -46,3 +46,4 @@ def test_mouse_curvature_extraction():
     assert m_features["euclidean_distance"] == 100.0
     assert m_features["curvature_ratio"] > 1.15  # Curved, not straight
     assert abs(m_features["click_duration"] - 80.0) < 1.0
+

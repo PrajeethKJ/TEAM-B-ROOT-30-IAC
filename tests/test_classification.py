@@ -37,3 +37,4 @@ def test_genuine_vs_impostor_classification():
     is_imp, conf_imp, metrics_imp = model.evaluate_attempt(impostor_attempt, impostor_digraphs, profile)
     assert is_imp is False
     assert conf_imp < 50.0, f"Impostor should be rejected with low confidence, got {conf_imp}"
+

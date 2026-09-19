@@ -92,3 +92,4 @@ class ProfileStore:
             json.dump({}, f)
         with open(AUDIT_LOG_FILE, "w", encoding="utf-8") as f:
             json.dump([], f)
+

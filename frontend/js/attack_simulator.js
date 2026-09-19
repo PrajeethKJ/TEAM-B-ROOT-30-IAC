@@ -201,3 +201,4 @@ class AttackSimulator {
 }
 
 window.attackSimulator = new AttackSimulator();
+

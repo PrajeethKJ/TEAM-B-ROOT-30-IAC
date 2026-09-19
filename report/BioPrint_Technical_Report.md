@@ -76,3 +76,4 @@ $$S_{confidence} = 100 \times \left(1 - A\right)$$
 - **Impostor Rejection Rate (FAR):** $< 4\%$ on test evaluations.
 - **Genuine Acceptance Rate (GAR):** $> 96\%$ under natural typing conditions.
 - **Bot Detection Rate:** $100\%$ on automated and scripted benchmarks.
+

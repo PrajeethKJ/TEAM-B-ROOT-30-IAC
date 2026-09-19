@@ -83,3 +83,4 @@ class BotDetector:
         is_bot = bot_probability >= 0.65
 
         return is_bot, bot_probability, reasons
+

@@ -157,3 +157,4 @@ class BiometricModel:
         }
 
         return is_genuine, confidence_pct, metrics
+

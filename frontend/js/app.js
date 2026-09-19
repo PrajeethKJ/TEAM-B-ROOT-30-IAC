@@ -365,3 +365,4 @@ async function fetchAuditLogs() {
     console.warn("Could not fetch audit logs", e);
   }
 }
+

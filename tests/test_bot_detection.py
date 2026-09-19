@@ -41,3 +41,4 @@ def test_zero_variance_scripted_typing():
     is_bot, prob, reasons = detector.evaluate_telemetry(raw_keys, raw_mouse, k_feat, m_feat, {})
     assert is_bot is True
     assert any("Synthetic Timing Precision" in r for r in reasons)
+

@@ -57,3 +57,4 @@ class AdaptiveProfileUpdater:
         profile_data["last_drift_update"] = confidence_score
 
         return profile_data
+

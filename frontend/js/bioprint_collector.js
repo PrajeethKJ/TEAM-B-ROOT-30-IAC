@@ -127,3 +127,4 @@ class BioPrintCollector {
 
 // Global instance
 window.bioprintCollector = new BioPrintCollector();
+
