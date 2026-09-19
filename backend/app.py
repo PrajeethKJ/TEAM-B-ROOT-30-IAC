@@ -1,32 +1,35 @@
 """
-BioPrint: High-Speed Behavioral Biometric Authentication Server
+BioPrint: High-Speed Behavioral Biometric Authentication Server (patched)
 Serves REST APIs, WebSocket real-time telemetry stream, and frontend web portal.
 """
 
-import time
+from __future__ import annotations
+
 import hashlib
 import os
-from typing import Dict, List, Any, Optional
+import time
+from typing import Any, Dict, List, Optional
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from .biometrics import (
-    FeatureExtractor,
-    BotDetector,
-    BiometricModel,
     AdaptiveProfileUpdater,
-    BiometricExplainer
+    BiometricExplainer,
+    BiometricModel,
+    BotDetector,
+    FeatureExtractor,
 )
+from .biometrics.bot_detector import ReplayGuard
 from .database import ProfileStore
 
 app = FastAPI(
     title="BioPrint Behavioral Biometric Authentication API",
     description="Passwordless-proof identity verification powered by behavioral biometrics",
-    version="1.0.0"
+    version="1.0.0",
 )
 
 # Enable CORS for local web and Chrome extension content scripts
@@ -45,6 +48,7 @@ biometric_model = BiometricModel()
 adaptive_updater = AdaptiveProfileUpdater()
 explainer = BiometricExplainer()
 profile_store = ProfileStore()
+replay_guard = ReplayGuard()
 
 # WebSocket client manager for live visual telemetry
 active_websockets: List[WebSocket] = []
@@ -81,6 +85,7 @@ class AuthRequest(BaseModel):
     keystrokes: List[Dict[str, Any]]
     mouse: List[Dict[str, Any]]
     client_metadata: Optional[Dict[str, Any]] = {}
+    nonce: Optional[str] = None
 
 
 # API Endpoints
@@ -89,7 +94,7 @@ async def health_check():
     return {
         "status": "online",
         "engine": "BioPrint Hybrid Biometric Core",
-        "timestamp": time.time()
+        "timestamp": time.time(),
     }
 
 
@@ -111,26 +116,37 @@ async def reset_system():
     return {"status": "success", "message": "All demo profiles and audit logs have been reset."}
 
 
+@app.post("/api/login-challenge")
+async def login_challenge():
+    return replay_guard.issue()
+
+
 @app.post("/api/enroll")
 async def enroll_user(req: EnrollmentRequest):
     if not req.username or not req.password:
         raise HTTPException(status_code=400, detail="Username and password are required")
 
     if len(req.sessions) < 2:
-        raise HTTPException(status_code=400, detail="At least 2 calibration sessions are required for baseline enrollment")
+        raise HTTPException(
+            status_code=400,
+            detail="At least 2 calibration sessions are required for baseline enrollment",
+        )
 
-    feature_vectors = []
-    digraph_samples = []
-
+    feature_vectors, digraph_samples, masks, sequences = [], [], [], []
     for s in req.sessions:
-        k_feat = feature_extractor.extract_keystroke_features(s.keystrokes)
-        m_feat = feature_extractor.extract_mouse_features(s.mouse)
-        vec = feature_extractor.build_feature_vector(k_feat, m_feat)
-        feature_vectors.append(vec)
-        digraph_samples.append(k_feat.get("digraph_latencies", {}))
+        f = feature_extractor.extract_all(s.keystrokes, s.mouse)
+        feature_vectors.append(f["vector"])
+        digraph_samples.append(f["digraphs"])
+        masks.append(f["mask"])
+        sequences.append(f["sequences"])
 
-    # Fit baseline model
-    profile_model = biometric_model.fit_profile(req.username, feature_vectors, digraph_samples)
+    profile_model = biometric_model.fit_profile(
+        username=req.username,
+        feature_vectors=feature_vectors,
+        digraph_samples=digraph_samples,
+        masks=masks,
+        sequences=sequences,
+    )
     pw_hash = hashlib.sha256(req.password.encode("utf-8")).hexdigest()
 
     profile_store.save_profile(req.username, pw_hash, profile_model)
@@ -143,8 +159,8 @@ async def enroll_user(req: EnrollmentRequest):
             "mean_dwell_ms": profile_model["mean"][0],
             "mean_flight_ms": profile_model["mean"][2],
             "cps": profile_model["mean"][4],
-            "curvature_ratio": profile_model["mean"][5]
-        }
+            "curvature_ratio": profile_model["mean"][5],
+        },
     }
 
 
@@ -156,7 +172,7 @@ async def authenticate(req: AuthRequest):
     if not profile:
         return JSONResponse(
             status_code=404,
-            content={"status": "error", "decision": "UNKNOWN_USER", "message": f"User '{req.username}' not enrolled."}
+            content={"status": "error", "decision": "UNKNOWN_USER", "message": f"User '{req.username}' not enrolled."},
         )
 
     # 1. Password Verification (BioPrint verifies behavior EVEN IF password is valid)
@@ -164,24 +180,24 @@ async def authenticate(req: AuthRequest):
     if pw_hash != profile.get("password_hash"):
         return JSONResponse(
             status_code=401,
-            content={"status": "error", "decision": "INVALID_PASSWORD", "message": "Incorrect password credentials."}
+            content={"status": "error", "decision": "INVALID_PASSWORD", "message": "Incorrect password credentials."},
         )
 
     bio_profile = profile.get("biometric_profile", {})
 
     # 2. Extract Features
-    k_feat = feature_extractor.extract_keystroke_features(req.keystrokes)
-    m_feat = feature_extractor.extract_mouse_features(req.mouse)
-    attempt_vec = feature_extractor.build_feature_vector(k_feat, m_feat)
-    attempt_digraphs = k_feat.get("digraph_latencies", {})
+    f = feature_extractor.extract_all(req.keystrokes, req.mouse)
 
-    # 3. Detect Bots & Scripted Fraud
+    # 3. Check Replay Nonce & Detect Bots
+    replay = replay_guard.check(req.username, req.keystrokes, nonce=req.nonce, enforce_nonce=bool(req.nonce))
+
     is_bot, bot_prob, bot_reasons = bot_detector.evaluate_telemetry(
         raw_keystrokes=req.keystrokes,
         raw_mouse=req.mouse,
-        keystroke_features=k_feat,
-        mouse_features=m_feat,
-        client_metadata=req.client_metadata or {}
+        keystroke_features=f["keystroke"],
+        mouse_features=f["mouse"],
+        client_metadata=req.client_metadata or {},
+        replay_result=replay,
     )
 
     t_eval = time.perf_counter()
@@ -194,9 +210,11 @@ async def authenticate(req: AuthRequest):
         # 4. Behavioral Biometric Match
         is_genuine, confidence_score, metrics = biometric_model.evaluate_attempt(
             username=req.username,
-            attempt_vector=attempt_vec,
-            attempt_digraphs=attempt_digraphs,
-            profile_data=bio_profile
+            attempt_vector=f["vector"],
+            attempt_digraphs=f["digraphs"],
+            profile_data=bio_profile,
+            mask=f["mask"],
+            sequences=f["sequences"],
         )
 
         if is_genuine:
@@ -204,9 +222,10 @@ async def authenticate(req: AuthRequest):
             # 5. Adaptive Drift Update (Stretch Goal 1)
             updated_profile = adaptive_updater.update_profile(
                 profile_data=bio_profile,
-                confirmed_vector=attempt_vec,
-                confirmed_digraphs=attempt_digraphs,
-                confidence_score=confidence_score
+                confirmed_vector=f["vector"],
+                confirmed_digraphs=f["digraphs"],
+                confidence_score=confidence_score,
+                confirmed_mask=f["mask"],
             )
             profile_store.update_profile_biometrics(req.username, updated_profile)
         else:
@@ -221,12 +240,13 @@ async def authenticate(req: AuthRequest):
         confidence_score=confidence_score,
         bot_reasons=bot_reasons if is_bot else [],
         metrics=metrics,
-        keystroke_features=k_feat,
-        mouse_features=m_feat,
-        profile_data=bio_profile
+        keystroke_features=f["keystroke"],
+        mouse_features=f["mouse"],
+        profile_data=bio_profile,
     )
 
-    result_payload = {
+    # Full payload for audit log and WebSocket live dashboard
+    dashboard_payload = {
         "status": "success",
         "decision": decision,
         "authenticated": (decision == "AUTHENTICATED"),
@@ -235,9 +255,9 @@ async def authenticate(req: AuthRequest):
         "metrics": metrics,
         "explanation": explanation,
         "telemetry_summary": {
-            "keystroke": k_feat,
-            "mouse": m_feat
-        }
+            "keystroke": f["keystroke"],
+            "mouse": f["mouse"],
+        },
     }
 
     # Log to audit store
@@ -248,11 +268,28 @@ async def authenticate(req: AuthRequest):
         "confidence_score": confidence_score,
         "latency_ms": latency_ms,
         "headline": explanation["headline"],
-        "badge_color": explanation["badge_color"]
+        "badge_color": explanation["badge_color"],
     })
 
     # Broadcast to live visual HUD via WebSocket
-    await broadcast_telemetry(result_payload)
+    await broadcast_telemetry(dashboard_payload)
+
+    # Public payload for HTTP client (stop leaking metrics on blocked responses)
+    public = biometric_model.public_metrics(metrics, decision == "AUTHENTICATED")
+    result_payload = {
+        "status": "success",
+        "decision": decision,
+        "authenticated": (decision == "AUTHENTICATED"),
+        "confidence_score": confidence_score if decision == "AUTHENTICATED" else None,
+        "latency_ms": latency_ms,
+        "metrics": public,
+        "explanation": explanation,
+    }
+    if decision == "AUTHENTICATED":
+        result_payload["telemetry_summary"] = {
+            "keystroke": f["keystroke"],
+            "mouse": f["mouse"],
+        }
 
     return result_payload
 
@@ -283,4 +320,3 @@ if os.path.exists(FRONTEND_DIR):
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
-

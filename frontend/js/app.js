@@ -117,12 +117,29 @@ function setupLoginForm() {
     });
   }
 
+  let currentLoginNonce = null;
+
+  async function fetchChallenge() {
+    try {
+      const res = await fetch("/api/login-challenge", { method: "POST" });
+      const data = await res.json();
+      if (data && data.nonce) {
+        currentLoginNonce = data.nonce;
+      }
+    } catch (e) {
+      console.warn("Could not fetch login challenge nonce", e);
+    }
+  }
+
   // Start biometrics capture when user focuses password or form
   [usernameInput, passwordInput].forEach(inp => {
     if (!inp) return;
     inp.addEventListener("focus", () => {
       if (!window.bioprintCollector.isCollecting) {
         window.bioprintCollector.startCollection();
+      }
+      if (!currentLoginNonce) {
+        fetchChallenge();
       }
     });
   });
@@ -139,6 +156,10 @@ function setupLoginForm() {
         return;
       }
 
+      if (!currentLoginNonce) {
+        await fetchChallenge();
+      }
+
       // Collect captured telemetry
       const telemetry = window.bioprintCollector.getTelemetry();
       window.bioprintCollector.stopCollection();
@@ -148,8 +169,10 @@ function setupLoginForm() {
         password: password,
         keystrokes: telemetry.keystrokes,
         mouse: telemetry.mouse,
-        client_metadata: telemetry.client_metadata
+        client_metadata: telemetry.client_metadata,
+        nonce: currentLoginNonce
       };
+      currentLoginNonce = null;
 
       try {
         const response = await fetch("/api/authenticate", {
